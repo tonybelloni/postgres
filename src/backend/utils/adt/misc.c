@@ -370,6 +370,13 @@ typedef struct
 } ts_db_fctx;
 
 Datum
+pg_objs_per_tablespace(PG_FUNCTION_ARGS) 
+{
+  int teste = 1;
+  return teste;
+}
+
+Datum
 pg_tablespace_databases(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *funcctx;
