@@ -372,8 +372,45 @@ typedef struct
 Datum
 pg_objs_per_tablespace(PG_FUNCTION_ARGS) 
 {
-  int teste = 1;
-  return teste;
+    FuncCallContext *funcctx;
+    char       *values[3];
+    HeapTuple   tuple;
+
+    if (SRF_IS_FIRSTCALL())
+    {
+        MemoryContext oldcontext;
+        TupleDesc   tupdesc;
+
+        funcctx = SRF_FIRSTCALL_INIT();
+        oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+        tupdesc = CreateTemplateTupleDesc(3, false);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 1, "word",
+             TEXTOID, -1, 0);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 2, "catcode",
+             CHAROID, -1, 0);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 3, "catdesc",
+             TEXTOID, -1, 0);
+
+        funcctx->attinmeta = TupleDescGetAttInMetadata(tupdesc);
+
+        MemoryContextSwitchTo(oldcontext);
+    }
+
+    funcctx = SRF_PERCALL_SETUP();
+
+    if (funcctx->call_cntr < 10)
+    {
+        values[0] = "Teste";
+        values[1] = "C";
+          values[2] = "Testando";
+
+        tuple = BuildTupleFromCStrings(funcctx->attinmeta, values);
+
+        SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+    }
+
+    SRF_RETURN_DONE(funcctx);
 }
 
 Datum
