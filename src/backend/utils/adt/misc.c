@@ -45,7 +45,6 @@
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
 
-
 /*
  * Common subroutine for num_nulls() and num_nonnulls().
  * Returns true if successful, false if function should return NULL.
@@ -361,58 +360,72 @@ pg_rotate_logfile(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
-/* Function to find out which databases make use of a tablespace */
-
 typedef struct
 {
-	char	   *location;
-	DIR		   *dirdesc;
+    char       *location;
+    DIR        *dirdesc;
 } ts_db_fctx;
 
 Datum
 pg_objs_per_tablespace(PG_FUNCTION_ARGS) 
 {
     FuncCallContext *funcctx;
-    char       *values[3];
-    HeapTuple   tuple;
+    ts_db_fctx *fctx;
+    char *values[2];
+    HeapTuple tuple;
+    struct dirent *direntry;
 
     if (SRF_IS_FIRSTCALL())
     {
+
         MemoryContext oldcontext;
         TupleDesc   tupdesc;
+
+elog(LOG, "%s\n", "Inicio SRF_IS_FIRSTCALL");
 
         funcctx = SRF_FIRSTCALL_INIT();
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-        tupdesc = CreateTemplateTupleDesc(3, false);
-        TupleDescInitEntry(tupdesc, (AttrNumber) 1, "word",
+        fctx = palloc(sizeof(ts_db_fctx));
+
+        tupdesc = CreateTemplateTupleDesc(2, false);
+        TupleDescInitEntry(tupdesc, (AttrNumber) 1, "database",
              TEXTOID, -1, 0);
-        TupleDescInitEntry(tupdesc, (AttrNumber) 2, "catcode",
-             CHAROID, -1, 0);
-        TupleDescInitEntry(tupdesc, (AttrNumber) 3, "catdesc",
+        TupleDescInitEntry(tupdesc, (AttrNumber) 2, "relation",
              TEXTOID, -1, 0);
 
         funcctx->attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
+        fctx->location = psprintf("base");
+        fctx->dirdesc = AllocateDir(fctx->location);
+
+        funcctx->user_fctx = fctx;
         MemoryContextSwitchTo(oldcontext);
+elog(LOG, "FIM SRF_IS_FIRSTCALL - %s\n", "pg_objs_per_tablespace");
     }
 
     funcctx = SRF_PERCALL_SETUP();
+    fctx = (ts_db_fctx *) funcctx->user_fctx;
 
-    if (funcctx->call_cntr < 10)
+    if (!fctx->dirdesc)         /* not a tablespace */
+        SRF_RETURN_DONE(funcctx);
+
+elog(LOG,"Uma Execucao : %s\n", "PG_OBJ_PER_TABLESPACE");
+
+    while ((direntry = ReadDir(fctx->dirdesc, fctx->location)) != NULL) 
     {
-        values[0] = "Teste";
-        values[1] = "C";
-          values[2] = "Testando";
+    values[0] = "base" ; //databaseOid;
+    values[1] = direntry->d_name;  //subdirentry->d_name;
 
-        tuple = BuildTupleFromCStrings(funcctx->attinmeta, values);
-
-        SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+    tuple = BuildTupleFromCStrings(funcctx->attinmeta, values); 
+    SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
     }
 
+    FreeDir(fctx->dirdesc);
     SRF_RETURN_DONE(funcctx);
 }
 
+/* Function to find out which databases make use of a tablespace */
 Datum
 pg_tablespace_databases(PG_FUNCTION_ARGS)
 {
