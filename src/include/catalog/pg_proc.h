@@ -4279,7 +4279,7 @@ DATA(insert OID = 2550 ( integer_pl_date			PGNSP PGUID 14 1 0 0 0 f f f f t f i 
 DATA(insert OID = 2556 ( pg_tablespace_databases	PGNSP PGUID 12 1 1000 0 0 f f f f t t s s 1 0 26 "26" _null_ _null_ _null_ _null_ _null_ pg_tablespace_databases _null_ _null_ _null_ ));
 DESCR("get OIDs of databases in a tablespace");
 
-DATA(insert OID = 2579 ( pg_obj_per_tablespace PGNSP PGUID 12 0 0 0 0 f f f f t t s s 1 0 22 "" _null_ _null_ _null_ _null_ _null_ pg_objs_per_tablespace _null_ _null_ _null_ ));
+DATA(insert OID = 2579 ( pg_objs_per_tablespace PGNSP PGUID 12 1 0 0 0 f f f f t t s s 1 0 2249 "26" _null_ _null_ _null_ _null_ _null_ pg_objs_per_tablespace _null_ _null_ _null_ ));
 DESCR("get OIDs objects per database and tablespace");
 
 DATA(insert OID = 2557 ( bool				   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 16 "23" _null_ _null_ _null_ _null_ _null_ int4_bool _null_ _null_ _null_ ));
