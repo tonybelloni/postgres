@@ -360,6 +360,7 @@ pg_rotate_logfile(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+/* Structures used in pg_objs_per_tablespace */
 typedef struct
 {
     char   *databaseOid;
@@ -372,13 +373,25 @@ typedef struct
    int         reccount;
 } tbsp_fctx;
 
-int MyFNatoi(const char *numArray, int *value)
+/*
+ * Check if a char* array is a number. I don't know if there is 
+ * something that does the same thing in the codebase, so I wrote 
+ * my own function.
+ */
+static int 
+check_is_digit(const char *numArray, int *value)
 {
     int n = 0;
     return sscanf(numArray, "%d%n", value, &n) > 0 /* integer was converted */
        &&  numArray[n] == '\0'; /* all input got consumed */
 }
 
+/*
+ * Function to report which objects are in which tablespace.
+ * It follows a similar approach as pg_tablespace_databases, ie,
+ * reads the tablespace's directory and list all OIDs in it.
+ *
+ */
 Datum
 pg_objs_per_tablespace(PG_FUNCTION_ARGS) 
 {
@@ -397,9 +410,37 @@ pg_objs_per_tablespace(PG_FUNCTION_ARGS)
 
     if (SRF_IS_FIRSTCALL())
     {
-
         MemoryContext oldcontext;
         TupleDesc   tupdesc;
+        Oid         tablespaceOid = PG_GETARG_OID(0);
+
+        /* If user is not superuser, return a error message and block execution */
+        if (!superuser())
+           ereport(ERROR,
+                (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+                 (errmsg("must be superuser to execute this function"))));
+
+        /*
+         * Global tablespace does not hold databases. If OID passed is from global tablespace
+         * return a error and block execution.
+         */
+        if (tablespaceOid == GLOBALTABLESPACE_OID)
+        {
+            ereport(ERROR,
+                   (errcode(ERRCODE_NO_DATA),
+                    (errmsg("global tablespace never has databases")))); 
+        }
+        else 
+        {
+            /* if OID passed is from default tablespace point location to base directory.
+             * Otherwise point location to tablespace's directory.
+             */
+            if (tablespaceOid == DEFAULTTABLESPACE_OID)
+                location = psprintf("base");
+            else
+                location = psprintf("pg_tblspc/%u/%s", tablespaceOid,
+                                          TABLESPACE_VERSION_DIRECTORY);
+        }
 
         funcctx = SRF_FIRSTCALL_INIT();
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
@@ -412,38 +453,68 @@ pg_objs_per_tablespace(PG_FUNCTION_ARGS)
 
         funcctx->attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
-        location = psprintf("base");
+        /* allocate directory descriptor. If directory descriptor is null, tablespace does not exists.
+         * In this case, return a error and block execution.
+         */
         dirdesc = AllocateDir(location);
+        if (!dirdesc)
+            ereport(ERROR,
+                   (errcode(ERRCODE_NO_DATA),
+                    (errmsg("%u is not a valid tablespace Oid", tablespaceOid))));
+ 
+        /* Reads the tablespace's directory. If it's a tablespace it will contain subdirectories for each
+         * database, each one with their own objects.
+         */
         while ((direntry = ReadDir(dirdesc, location)) != NULL)
         {
             char *subdir;
- 
+
+            /* ignore parent directories */ 
             if (direntry->d_name[0] == '.')
                continue;
 
+           /* if directory entry is a directory then it is a database OID. Iterate over it go get the 
+            * objects in the database.
+            */
            if (direntry->d_type == DT_DIR)
            {
-              subdir = psprintf("base/%s", direntry->d_name);
+              /* point subdir location to tablespace/database directory */
+              subdir = psprintf("%s/%s", location, direntry->d_name);
+
+              /* allocate a descriptor to the tablespace/database location 
+               * TODO : Test if directory is invalid or does not exists
+               */
               subdirdesc = AllocateDir(subdir);
+
+              /* iterate over tablespace/database directory and get the objects */
               while ((subdirentry = ReadDir(subdirdesc, subdir)) != NULL)
               {
+
+                /* ignore parent directories */
                 if (subdirentry->d_name[0] == '.') 
                    continue;
 
-                if (!MyFNatoi(subdirentry->d_name, &t))
+                /* check if entry is a number. Do not consider _vm, _fsm and other files */
+                if (!check_is_digit(subdirentry->d_name, &t))
                    continue;
 
+                /* If it's the first time, allocate one record into the records array and 
+                 * add a database/object value pair.
+                 */
                 if (maxrecords == 0)
                 {
                    records = (tbsp_record*) malloc(sizeof(tbsp_record));
-                   records[0].databaseOid = get_database_name(atoi(direntry->d_name));
+                   records[0].databaseOid = get_database_name(atooid(direntry->d_name));
                    records[0].relationOid = strdup(subdirentry->d_name);
                    maxrecords++;
                 }
                 else
                 {
+                   /* If the records array is already initialized, realloc one more record and
+                    * add a database/object value pair into it.
+                    */
                    records = (tbsp_record*) realloc(records, (maxrecords+1) * sizeof(tbsp_record));
-                   records[maxrecords].databaseOid = get_database_name(atoi(direntry->d_name));
+                   records[maxrecords].databaseOid = get_database_name(atooid(direntry->d_name));
                    records[maxrecords].relationOid = strdup(subdirentry->d_name);
                    maxrecords++;
                 }
@@ -453,8 +524,10 @@ pg_objs_per_tablespace(PG_FUNCTION_ARGS)
         }
         FreeDir(dirdesc);
 
+        /* Initialize the context struct used over SRF_PERCALL iterations */
         fctx = palloc(sizeof(tbsp_fctx));
 
+        /* assign values to the context struct used to maintain the status over SRF_PERCALL iterations */
         fctx->records = records; 
         fctx->reccount = maxrecords; 
 
@@ -465,6 +538,7 @@ pg_objs_per_tablespace(PG_FUNCTION_ARGS)
     funcctx = SRF_PERCALL_SETUP();
     fctx = (tbsp_fctx *) funcctx->user_fctx;
 
+    /* iterate over the array of records and return a tuple to each database/object value pair */
     if (funcctx->call_cntr < fctx->reccount)
     {
       values[0] = fctx->records[funcctx->call_cntr].databaseOid;
