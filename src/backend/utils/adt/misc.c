@@ -362,18 +362,38 @@ pg_rotate_logfile(PG_FUNCTION_ARGS)
 
 typedef struct
 {
-    char       *location;
-    DIR        *dirdesc;
-} ts_db_fctx;
+    char   *databaseOid;
+    char   *relationOid;
+} tbsp_record;
+
+typedef struct
+{
+   tbsp_record *records;
+   int         reccount;
+} tbsp_fctx;
+
+int MyFNatoi(const char *numArray, int *value)
+{
+    int n = 0;
+    return sscanf(numArray, "%d%n", value, &n) > 0 /* integer was converted */
+       &&  numArray[n] == '\0'; /* all input got consumed */
+}
 
 Datum
 pg_objs_per_tablespace(PG_FUNCTION_ARGS) 
 {
     FuncCallContext *funcctx;
-    ts_db_fctx *fctx;
     char *values[2];
+    DIR *subdirdesc;
+    DIR *dirdesc;
+    char *location;
     HeapTuple tuple;
     struct dirent *direntry;
+    struct dirent *subdirentry;
+    tbsp_record *records = NULL;
+    int maxrecords = 0;
+    tbsp_fctx *fctx; 
+    int t;
 
     if (SRF_IS_FIRSTCALL())
     {
@@ -381,12 +401,8 @@ pg_objs_per_tablespace(PG_FUNCTION_ARGS)
         MemoryContext oldcontext;
         TupleDesc   tupdesc;
 
-elog(LOG, "%s\n", "Inicio SRF_IS_FIRSTCALL");
-
         funcctx = SRF_FIRSTCALL_INIT();
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-
-        fctx = palloc(sizeof(ts_db_fctx));
 
         tupdesc = CreateTemplateTupleDesc(2, false);
         TupleDescInitEntry(tupdesc, (AttrNumber) 1, "database",
@@ -396,36 +412,77 @@ elog(LOG, "%s\n", "Inicio SRF_IS_FIRSTCALL");
 
         funcctx->attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
-        fctx->location = psprintf("base");
-        fctx->dirdesc = AllocateDir(fctx->location);
+        location = psprintf("base");
+        dirdesc = AllocateDir(location);
+        while ((direntry = ReadDir(dirdesc, location)) != NULL)
+        {
+            char *subdir;
+ 
+            if (direntry->d_name[0] == '.')
+               continue;
+
+           if (direntry->d_type == DT_DIR)
+           {
+              subdir = psprintf("base/%s", direntry->d_name);
+              subdirdesc = AllocateDir(subdir);
+              while ((subdirentry = ReadDir(subdirdesc, subdir)) != NULL)
+              {
+                if (subdirentry->d_name[0] == '.') 
+                   continue;
+
+                if (!MyFNatoi(subdirentry->d_name, &t))
+                   continue;
+
+                if (maxrecords == 0)
+                {
+                   records = (tbsp_record*) malloc(sizeof(tbsp_record));
+                   records[0].databaseOid = get_database_name(atoi(direntry->d_name));
+                   records[0].relationOid = strdup(subdirentry->d_name);
+                   maxrecords++;
+                }
+                else
+                {
+                   records = (tbsp_record*) realloc(records, (maxrecords+1) * sizeof(tbsp_record));
+                   records[maxrecords].databaseOid = get_database_name(atoi(direntry->d_name));
+                   records[maxrecords].relationOid = strdup(subdirentry->d_name);
+                   maxrecords++;
+                }
+              }
+              FreeDir(subdirdesc);
+           }
+        }
+        FreeDir(dirdesc);
+
+        fctx = palloc(sizeof(tbsp_fctx));
+
+        fctx->records = records; 
+        fctx->reccount = maxrecords; 
 
         funcctx->user_fctx = fctx;
         MemoryContextSwitchTo(oldcontext);
-elog(LOG, "FIM SRF_IS_FIRSTCALL - %s\n", "pg_objs_per_tablespace");
     }
 
     funcctx = SRF_PERCALL_SETUP();
-    fctx = (ts_db_fctx *) funcctx->user_fctx;
+    fctx = (tbsp_fctx *) funcctx->user_fctx;
 
-    if (!fctx->dirdesc)         /* not a tablespace */
-        SRF_RETURN_DONE(funcctx);
-
-elog(LOG,"Uma Execucao : %s\n", "PG_OBJ_PER_TABLESPACE");
-
-    while ((direntry = ReadDir(fctx->dirdesc, fctx->location)) != NULL) 
+    if (funcctx->call_cntr < fctx->reccount)
     {
-    values[0] = "base" ; //databaseOid;
-    values[1] = direntry->d_name;  //subdirentry->d_name;
+      values[0] = fctx->records[funcctx->call_cntr].databaseOid;
+      values[1] = fctx->records[funcctx->call_cntr].relationOid; 
 
-    tuple = BuildTupleFromCStrings(funcctx->attinmeta, values); 
-    SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+      tuple = BuildTupleFromCStrings(funcctx->attinmeta, values);
+      SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
     }
-
-    FreeDir(fctx->dirdesc);
     SRF_RETURN_DONE(funcctx);
 }
 
 /* Function to find out which databases make use of a tablespace */
+typedef struct
+{
+    char       *location;
+    DIR        *dirdesc;
+} ts_db_fctx;
+
 Datum
 pg_tablespace_databases(PG_FUNCTION_ARGS)
 {
